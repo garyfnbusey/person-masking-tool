@@ -90,10 +90,10 @@ def process_images(img_dir, checkpoint_path, output_dir, log_fn):
             all_masks = []
             for box in face_locations:
                 top, right, bottom, left = box
-                expand_y = int((bottom - top) * 0.6)
-                expand_x = int((right - left) * 0.2)
+                expand_y = int((bottom - top) * 1.5)  # Increase height expansion
+                expand_x = int((right - left) * 0.75)  # Increase width expansion
                 top_exp = max(0, top - expand_y)
-                bottom_exp = min(image_rgb.shape[0], bottom + int(0.2 * expand_y))
+                bottom_exp = min(image_rgb.shape[0], bottom + int(0.5 * expand_y))
                 left_exp = max(0, left - expand_x)
                 right_exp = min(image_rgb.shape[1], right + expand_x)
                 input_box = np.array([left_exp, top_exp, right_exp, bottom_exp])
