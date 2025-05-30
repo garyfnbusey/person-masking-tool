@@ -1,3 +1,9 @@
+# Looks in img\reference\ for the only reference image (any extension).
+# Iterates over all .png, .jpg, and .jpeg files in img\.
+# need the following:
+# sam_HQ
+# deploy.prototxt
+# res10_300x300_ssd_iter_140000.caffemodel
 import os
 import glob
 import cv2
@@ -5,16 +11,19 @@ import face_recognition
 import numpy as np
 from PIL import Image
 import torch
-from sam_hq import sam_hq_model_registry, SamPredictor
+from segment_anything import sam_model_registry as sam_hq_model_registry, SamPredictor
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import threading
-# Looks in img\reference\ for the only reference image (any extension).
-# Iterates over all .png, .jpg, and .jpeg files in img\.
+
+stop_event = threading.Event()
+
 # --- DEFAULTS ---
 MODEL_TYPE = 'vit_h'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 DEFAULT_SAM_PATH = r'C:\\Users\\LocalAdmin\\Downloads\\GitHub\\un-stable-diffusion\\stable-diffusion-webui\\extensions\\sd-webui-segment-anything\\models\\sam\\sam_hq_vit_h.pth'
+DEFAULT_DNN_PROTO = 'deploy.prototxt'
+DEFAULT_DNN_MODEL = 'res10_300x300_ssd_iter_140000.caffemodel'
 
 # --- GUI Functions ---
 def load_reference_encoding(ref_folder):
@@ -39,6 +48,27 @@ def apply_mask_and_save(image_path, mask, output_path):
         mask = cv2.resize(mask.astype(np.uint8), (image_rgb.shape[1], image_rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
     image_rgba = np.dstack((image_rgb, mask.astype(np.uint8) * 255))
     Image.fromarray(image_rgba).save(output_path)
+
+def fallback_face_detection(image_bgr, log_fn):
+    net = cv2.dnn.readNetFromCaffe(DEFAULT_DNN_PROTO, DEFAULT_DNN_MODEL)
+    h, w = image_bgr.shape[:2]
+    blob = cv2.dnn.blobFromImage(cv2.resize(image_bgr, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
+    net.setInput(blob)
+    detections = net.forward()
+    best_box = None
+    max_area = 0
+    for i in range(detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+        if confidence > 0.5:
+            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+            (startX, startY, endX, endY) = box.astype("int")
+            area = (endX - startX) * (endY - startY)
+            if area > max_area:
+                max_area = area
+                best_box = (startY, endX, endY, startX)  # mimic face_recognition box
+    if best_box:
+        log_fn("Fallback face used (OpenCV DNN).")
+    return best_box
 
 def process_images(img_dir, checkpoint_path, output_dir, log_fn):
     try:
@@ -65,25 +95,43 @@ def process_images(img_dir, checkpoint_path, output_dir, log_fn):
             face_encodings = face_recognition.face_encodings(image, face_locations)
 
             matched_box = None
+            best_match_encoding = None
             for box, encoding in zip(face_locations, face_encodings):
                 match = face_recognition.compare_faces([reference_encoding], encoding, tolerance=0.5)
                 if match[0]:
                     matched_box = box
+                    best_match_encoding = encoding
                     break
 
             if matched_box is None:
-                log_fn(f"No matching person found in {filename}.")
-                continue
+                image_bgr = cv2.imread(image_path)
+                matched_box = fallback_face_detection(image_bgr, log_fn)
+                if matched_box is None:
+                    log_fn(f"No matching or fallback face found in {filename}.")
+                    continue
+            else:
+                image_bgr = cv2.imread(image_path)
 
-            image_bgr = cv2.imread(image_path)
             image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
             predictor.set_image(image_rgb)
 
             top, right, bottom, left = matched_box
-            input_point = np.array([[(left + right) // 2, (top + bottom) // 2]])
-            input_label = np.array([1])
+            expand_y = int((bottom - top) * 0.6)
+            expand_x = int((right - left) * 0.2)
+            top_exp = max(0, top - expand_y)
+            bottom_exp = min(image_rgb.shape[0], bottom + int(0.2 * expand_y))
+            left_exp = max(0, left - expand_x)
+            right_exp = min(image_rgb.shape[1], right + expand_x)
+            input_box = np.array([left_exp, top_exp, right_exp, bottom_exp])
 
-            masks, _, _ = predictor.predict(point_coords=input_point, point_labels=input_label, multimask_output=False)
+            center_point = np.array([(left + right) // 2, (top + bottom) // 2])
+
+            masks, _, _ = predictor.predict(
+                box=input_box,
+                point_coords=np.array([center_point]),
+                point_labels=np.array([1]),
+                multimask_output=False
+            )
             mask = masks[0]
 
             apply_mask_and_save(image_path, mask, output_path)
