@@ -1,6 +1,10 @@
 # Person Masking Tool
 
+`batch_mask_img.py`
 A GUI-based Python application that identifies and isolates a specific person in images, masking out everything else. Built on **SAM-HQ** and enhanced with face recognition and fallback DNN-based detection.
+
+`batch_mask_img_all.py`
+same tool but no reference used so all humans are masked out instead.
 
 This tool is created for personal use. There are a couple of files which are needed:
 
